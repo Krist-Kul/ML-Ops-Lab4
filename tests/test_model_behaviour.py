@@ -20,7 +20,11 @@ from sklearn.ensemble import RandomForestClassifier
 from src import config, data, seeds
 
 RAW = config.REPO_ROOT / "data" / "raw" / "sensors.csv"
-LATENCY_BUDGET_MS = 50.0  # TODO(Lab 4): set from YOUR p95 target in loadtest/k6.js
+# Half of the 50 ms service p95 in loadtest/k6.js. Lab 3 measured the model as ~25 of the
+# service's 26.3 ms p50, so the model IS the latency budget; a mean single-row call above
+# half the p95 leaves the tail and the HTTP layer nothing. Measured here: 13.0 ms locally.
+# What fails it: more trees, deeper trees, or n_jobs=-1 dispatch on a wider machine.
+LATENCY_BUDGET_MS = 25.0
 
 
 @pytest.fixture(scope="module")

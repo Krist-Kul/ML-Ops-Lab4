@@ -28,8 +28,7 @@ jobs:
       - name: Install
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt
-          # TODO(Lab 4): once requirements.txt carries hashes, add --require-hashes.
+          pip install --require-hashes -r requirements.txt
 
       - name: Lint
         # ruff is pinned in requirements.txt and installed above. Installing it unpinned
@@ -38,6 +37,16 @@ jobs:
 
       - name: Portability audit
         run: python scripts/portability_audit.py
+
+      # Unit tests need no data file and no network, so they run before the dataset
+      # exists: a broken PSI function fails here in seconds.
+      - name: Unit tests
+        run: >-
+          pytest -q tests/
+          --ignore=tests/test_data.py
+          --ignore=tests/test_model_behaviour.py
+          --ignore=tests/test_service.py
+          --ignore=tests/test_vertex_shim.py
 
       - name: Generate dataset
         run: python scripts/make_dataset.py
@@ -49,7 +58,7 @@ jobs:
         run: pytest -q tests/test_model_behaviour.py
 
       - name: Service tests
-        run: pytest -q tests/test_service.py
+        run: pytest -q tests/test_service.py tests/test_vertex_shim.py
 
   build:
     needs: test
@@ -70,7 +79,7 @@ jobs:
       - name: Install
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install --require-hashes -r requirements.txt
 
       - name: Build training image
         run: docker buildx build --platform linux/amd64 -t itcs355:${{ github.sha }} --load .
@@ -88,13 +97,8 @@ jobs:
             -e MODEL_PATH=/app/reports/model.joblib \
             -e MODEL_VERSION=${{ github.sha }} \
             itcs355-serve:${{ github.sha }}
-          for i in $(seq 1 30); do
-            curl -sf localhost:8080/ready && break || sleep 2
-          done
-          curl -sf -X POST localhost:8080/predict \
-            -H 'content-type: application/json' \
-            -d '{"temp_c":78.4,"vibration_mm_s":3.1,"pressure_kpa":315.2,"hours_since_service":4200,"load_pct":68,"ambient_humidity":55}' \
-            | tee /dev/stderr | grep -q probability
+          python scripts/integration_check.py --expect-version ${{ github.sha }} \
+            || { docker logs svc; exit 1; }
           docker stop svc
 
       # Images are tagged with the commit SHA, never `latest`. A `latest` tag makes it

@@ -292,7 +292,50 @@ end of Task 4.
 vCPU-hour for the same machine, and E2 is 30% cheaper than N1. With 149 THB of budget left,
 this endpoint spends it in 29 hours. Full write-up: `reports/lab3-deploy.md`.
 
-Tasks 3–5 (load test, canary and rollback, cost per 1,000) are not done yet.
+Tasks 3–5 (load test, canary and rollback, cost per 1,000) are written up in
+`reports/lab3-load.md`, `reports/lab3-canary.md` and `reports/lab3-cost.md`.
+
+---
+
+## Lab 4 — CI/CD, observability, drift
+
+### Task 1 — tests that can fail
+
+| category | where | runs in CI as |
+|---|---|---|
+| unit | `tests/test_drift.py`, `test_costs.py`, `test_canary.py`, `test_traffic_split.py`, `test_llm_eval.py` | `Unit tests`, before the dataset exists |
+| data contract | `tests/test_data.py` (contract half) | `Data contract tests` |
+| model behaviour | `tests/test_model_behaviour.py` | `Model behaviour tests` |
+| integration | `scripts/integration_check.py` against the built serving image | `Integration test` in the build job |
+
+**The incident each data contract test would have caught.** Each was checked by corrupting the
+real file the way the incident would, and running the four tests against it:
+
+| test | incident it catches | Fahrenheit | % as fraction | 2% nulls | dropped column |
+|---|---|---|---|---|---|
+| `test_schema_columns_present_and_typed` | upstream renames or drops a column (`ambient_humidity` removed by a gateway update); training fails with a `KeyError` far from the cause, serving returns 422 to every caller | pass | pass | pass | **FAIL** |
+| `test_null_rate_within_threshold` | a sensor gateway outage writes empty fields. scikit-learn forests accept NaN since 1.4, so this would not crash: the model learns "missing" as a signal | pass | pass | **FAIL** | error |
+| `test_features_within_plausible_ranges` | sensor firmware switches `temp_c` to Fahrenheit; every machine reads 160+ and is predicted to fail | **FAIL** | pass | pass | error |
+| `test_feature_means_within_reference_band` | `load_pct` arrives as 0.68 instead of 68. Every row passes the [0, 100] range check; only the bulk shift gives it away | **FAIL** | **FAIL** | pass | error |
+| `test_target_is_binary_and_not_degenerate` | the label join breaks and every row gets 0; accuracy looks excellent | | | | |
+| `test_no_machine_leaks_across_splits` | Lab 1's leakage: a row-wise split reports a score that never survives production | | | | |
+
+The range test and the mean band look redundant until the fraction case: no single row is
+implausible, so only a test about the distribution can see it. Thresholds are stated in
+`tests/test_data.py`: **null rate 0** (no imputer exists, so any null is learned rather than
+handled), **mean within 0.5 reference std** (the whole file differs from the training split by at
+most 0.087 std; every unit error worth naming is more than 3 std away).
+
+**Model behaviour.** Valid probabilities, a known-healthy machine scores below 0.5, risk does not
+fall as hours since service rise, predictions are not constant, and a single-row prediction
+stays under **25 ms** — half the 50 ms service p95 in `loadtest/k6.js`, because Lab 3 measured
+the model as ~25 of the service's 26.3 ms p50. Measured locally: 13.0 ms.
+
+**Integration.** `scripts/integration_check.py` starts nothing itself; CI runs the image it just
+built, tagged with the commit SHA, and the script asserts the `/predict` body has exactly
+`probability`, `model_version`, `request_id`; that the version served is the SHA CI built (in
+the body and the `x-model-version` header); and that a bad row gets a 422 naming the field. The
+grep for `probability` it replaced would pass on an error body that mentions the word.
 
 ---
 

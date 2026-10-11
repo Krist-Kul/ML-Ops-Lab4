@@ -14,11 +14,24 @@ production.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from src import config, data
 
 RAW = config.REPO_ROOT / "data" / "raw" / "sensors.csv"
+PROFILE = config.REPO_ROOT / "monitoring" / "reference_profile.json"
+
+# The pipeline has no imputer, and scikit-learn's forests have accepted NaN since 1.4 —
+# so a null does not crash training, it is silently learned as a signal. Zero, not "low".
+MAX_NULL_RATE = 0.0
+
+# How far a feature's mean may sit from the training reference, in reference standard
+# deviations. Measured: the whole file differs from the training split by at most 0.087
+# std (load_pct). Every unit error worth naming is several std away — Fahrenheit for
+# Celsius is +10, a fraction for a percentage is -3.5 — so 0.5 has room on both sides.
+MEAN_BAND_STD = 0.5
 
 
 @pytest.fixture(scope="module")
@@ -39,16 +52,28 @@ def test_schema_columns_present_and_typed(df):
         assert str(df[col].dtype) == expected, f"{col}: expected {expected}, got {df[col].dtype}"
 
 
-def test_no_nulls_in_required_columns(df):
-    nulls = df[list(data.SCHEMA)].isna().sum()
-    offenders = nulls[nulls > 0]
-    assert offenders.empty, f"null values found: {offenders.to_dict()}"
+def test_null_rate_within_threshold(df):
+    rates = df[list(data.SCHEMA)].isna().mean()
+    offenders = rates[rates > MAX_NULL_RATE]
+    assert offenders.empty, f"null rate above {MAX_NULL_RATE}: {offenders.round(4).to_dict()}"
 
 
 def test_features_within_plausible_ranges(df):
     for col, (lo, hi) in data.PLAUSIBLE_RANGES.items():
         assert df[col].min() >= lo, f"{col} below plausible floor: {df[col].min()}"
         assert df[col].max() <= hi, f"{col} above plausible ceiling: {df[col].max()}"
+
+
+def test_feature_means_within_reference_band(df):
+    """Catches what the range test cannot: a value that is plausible in isolation and wrong
+    in bulk. load_pct arriving as 0.68 instead of 68 passes [0, 100] on every row."""
+    profile = json.loads(PROFILE.read_text())["features"]
+    for col, ref in profile.items():
+        delta = (df[col].mean() - ref["mean"]) / ref["std"]
+        assert abs(delta) <= MEAN_BAND_STD, (
+            f"{col} mean {df[col].mean():.3f} is {delta:+.2f} std from the training "
+            f"reference {ref['mean']:.3f}; the contract allows {MEAN_BAND_STD}"
+        )
 
 
 def test_target_is_binary_and_not_degenerate(df):
