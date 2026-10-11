@@ -131,7 +131,27 @@ class CloudAdapter(ABC):
         raise NotImplementedError("Lab 3")
 
     # --- Lab 4 ---------------------------------------------------------------
-    def emit_metric(self, name: str, value: float, unit: str = "None") -> None:
+    def emit_metric(self, name: str, value: float, unit: str = "None",
+                    labels: dict[str, str] | None = None) -> None:
+        """Write one point of a custom metric. `labels` splits one metric into series —
+        drift_psi{feature=temp_c} — so an alert can be "any series above X" rather than
+        one alert per feature."""
+        raise NotImplementedError("Lab 4")
+
+    def download_dir(self, uri: str, local_dir: str) -> int:
+        """Copy every object under `uri` into `local_dir`, keeping relative paths. Returns
+        the number of files. A registered model is a directory, not one object."""
+        raise NotImplementedError("Lab 4")
+
+    def delete_prefix(self, key_prefix: str) -> int:
+        """Delete every object under BLOB_URI/key_prefix. Returns the number deleted."""
+        raise NotImplementedError("Lab 4")
+
+    def ensure_metric_alert(self, metric: str, thresholds: dict[str, float], email: str,
+                            tags: dict[str, str], label: str = "feature") -> dict[str, str]:
+        """Create, or update in place, an alert that fires when the series of `metric`
+        whose `label` is k exceeds thresholds[k], for any k, notifying `email`. Idempotent: running it twice must not
+        produce two alerts, or the second email teaches people to ignore the first."""
         raise NotImplementedError("Lab 4")
 
     # --- Lab 5 ---------------------------------------------------------------

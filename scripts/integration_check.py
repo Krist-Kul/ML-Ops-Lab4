@@ -58,6 +58,14 @@ def main() -> int:
     assert bad.status_code == 422, f"bad row got {bad.status_code}"
     assert bad.json()["detail"][0]["field"] == "temp_c", bad.text[:300]
 
+    # The dashboard reads these; a release that drops them blanks the panels without failing.
+    metrics = requests.get(f"{args.base}/metrics", timeout=10)
+    assert metrics.status_code == 200, metrics.status_code
+    text = metrics.text
+    assert 'http_requests_total{path="/predict",status="422",status_class="4xx"} 1' in text, text[:400]
+    assert f'model_version_info{{version="{args.expect_version}"}} 1' in text
+    assert "feature_window_psi{" in text, "rolling PSI missing: is the reference profile in the image?"
+
     print(f"PASS  version={body['model_version']} probability={body['probability']:.4f} "
           f"request_id={body['request_id']}")
     return 0

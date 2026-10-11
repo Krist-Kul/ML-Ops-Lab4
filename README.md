@@ -337,6 +337,74 @@ built, tagged with the commit SHA, and the script asserts the `/predict` body ha
 the body and the `x-model-version` header); and that a bad row gets a 422 naming the field. The
 grep for `probability` it replaced would pass on an error body that mentions the word.
 
+### Task 2 — the pipeline
+
+Repository: <https://github.com/Krist-Kul/ML-Ops-Lab4>. `ci.yml` runs on every pull request and
+push to main; `cd.yml` runs only when CI completes green on a push to main, through a `staging`
+environment that accepts deployments from `main` alone.
+
+```
+CI   lint → portability audit → unit → data contract → model behaviour → service
+     → build images tagged ${{ github.sha }} → integration test against that image
+CD   (main, CI green) OIDC → build → push by SHA, register by digest → staging alias → smoke test
+```
+
+- **No stored keys.** `infra/ci_identity.sh` creates a workload identity pool whose provider accepts
+  a GitHub token only when `repository == Krist-Kul/ML-Ops-Lab4` **and** `ref == refs/heads/main`.
+  A pull request cannot get credentials at all — the bad-commit PR in Task 3 could not push or
+  deploy even if the workflow tried. The service account holds four roles, each scoped as narrowly
+  as the platform allows (registry writer on one repository, object viewer on one bucket, metric
+  writer, Vertex user); the script says why each one.
+- **Images are tagged with the commit SHA, registered by digest.** The SHA names the commit; the
+  digest names the bytes, and only the digest goes into the model registry.
+- **CD ships the commit CI tested.** A `workflow_run` trigger checks out the default branch's head
+  by default, which may already be a newer commit; `cd.yml` checks out `workflow_run.head_sha`.
+- **Staging is a registry alias, not a warm endpoint.** CD registers a serving version (this image,
+  the production version's model bytes), moves `staging` onto it, then pulls the image back by
+  digest and runs `integration_check.py` against that exact pair. One replica bills 122 THB/day
+  whether called or not and the Lab 3 budget is spent; `STAGING_ENDPOINT=true` as a repository
+  variable adds the endpoint deploy through the same `deploy.py` Lab 3 used.
+- **Installs are hash-checked everywhere.** CI uses `requirements.txt`; CD and the drift job use
+  `requirements-cd.txt`, compiled with `requirements.txt` as a constraint so every package CI tested
+  resolves to the same version.
+
+### Task 4 — dashboard and SLO
+
+The service exposes `/metrics` (Prometheus text, hand-written in `service/metrics.py` rather than a
+new dependency in the hash-compiled serving requirements). `make monitor-up` runs the CI-built
+serving image with the registered production model, Prometheus and Grafana; the dashboard is
+**`monitoring/dashboard.json`, provisioned read-only** — the committed file is the dashboard.
+
+| panel | query source | note |
+|---|---|---|
+| request rate | `http_requests_total` | prediction routes only; probes would otherwise dominate |
+| error rate by class | `status_class` label, 4xx and 5xx separate | 4xx is excluded from the availability SLO |
+| latency p50 / p95 / p99 | `request_latency_ms` histogram, server-side | buckets dense around 25 and 50 ms, where interpolation matters |
+| feature drift | `feature_window_psi` over the last 500 accepted inputs | same statistic and window as the scheduled detector; dashed lines are the alert limits |
+| rolling mean | `feature_window_mean{feature="temp_c"}` | a shift moves it; a spread or fleet-mix change barely does, which is why PSI is the alerting signal |
+| model version | `model_version_info` | one value; two outside a canary means something is wrong |
+
+Rejected rows never enter the rolling window: a 422 is a caller problem, and counting it would let
+one misbehaving client move the drift panel. Tests pin that, the 4xx/2xx split, and that the window
+PSI moves when the inputs shift.
+
+**SLO** (`monitoring/slo.yaml`; one sentence each):
+
+| objective | target and window | when the budget is spent |
+|---|---|---|
+| availability | 99.5% of non-4xx responses over 30 days | freeze every deploy that is not a rollback or reliability fix, model versions included, until the budget recovers, and post-mortem which deploys spent it; if a provider outage spent it, record that and do not freeze |
+| latency | p95 of `/predict` ≤ 200 ms at the endpoint over 7 days | if request rate is near the 10.4 req/s one replica saturates at, raise `max_replicas` to 2 (pre-approved, 5.09 THB/h); otherwise freeze deploys and bisect the last change — never relax the target |
+| freshness | production model ≤ 30 days old | trigger the Lab 5 retrain, promote only if the gate passes and the new window shows no schema or null-rate change; otherwise keep the stale model with a dated waiver |
+
+99.5% is defended against what this deployment can do (one replica, 37–42 s cold start, a 36.6 s
+scripted rollback); 99.9% would be spent by one slow incident and would mean paying for a second
+replica nobody downstream would notice. The latency target is the 200 ms end-to-end promise in
+`loadtest/k6.js`; the 50 ms there is the container's share of it, which Lab 3 measured
+`n1-standard-2` missing (123.5 ms). Both are kept as they were committed. And the freshness
+objective has a date on it: production is version 1, registered 2026-09-20, and breaches on
+**2026-10-20** — so Lab 5's schedule must retrain at least every 28 days, or the SLO and the
+pipeline contradict each other.
+
 ---
 
 ## Notes for the grader

@@ -24,6 +24,9 @@ WORKDIR /app
 COPY --chown=runner:runner service/ ./service/
 COPY --chown=runner:runner src/ ./src/
 COPY --chown=runner:runner cloudlayer/ ./cloudlayer/
+# The rolling-window PSI on /metrics scores against the training profile, and drift.py
+# holds the scoring function the scheduled detector also uses. One function, one answer.
+COPY --chown=runner:runner monitoring/ ./monitoring/
 USER runner
 
 # Serve the port before the model exists: liveness answers alive, readiness answers 503

@@ -1,0 +1,9 @@
+# Lab 4 — what the CD and scheduled-drift jobs install: everything CI has, plus the two
+# provider SDKs cloudlayer/ imports. Compiled against requirements.txt as a constraint so
+# every package CI tests with resolves to the same version here.
+#
+#   uv pip compile requirements-cd.in -c requirements.txt --generate-hashes \
+#     --python-version 3.11 --python-platform x86_64-manylinux_2_28 -o requirements-cd.txt
+-r requirements.in
+google-cloud-aiplatform==2.1.0
+google-cloud-storage==3.13.1  # the version requirements-serve.txt already pins

@@ -1,0 +1,47 @@
+# Lab 4 — the service, Prometheus and Grafana, locally. Nothing here bills.
+#
+#   make monitor-up        # builds the serving image, starts all three
+#   open http://localhost:3000/d/itcs355-service
+#   make monitor-down
+#
+# The service runs the same image CI builds and CD pushes, serving the registered
+# production version's model bytes (fetched by `make monitor-up` into reports/prod-model).
+# Images are pinned by digest: a dashboard that changes because Grafana released is not a
+# dashboard you can compare across weeks.
+name: itcs355-monitor
+
+services:
+  service:
+    build:
+      context: ../..
+      dockerfile: service/Dockerfile.serve
+      platforms: [linux/amd64]
+    image: itcs355-serve:${GIT_SHA:-local}
+    platform: linux/amd64
+    environment:
+      MODEL_URI: /app/prod-model
+      MODEL_VERSION: ${MODEL_VERSION:-1}
+      MODEL_LOAD_WAIT_S: "0"
+    volumes:
+      - ../../reports/prod-model:/app/prod-model:ro
+    ports: ["8080:8080"]
+
+  prometheus:
+    image: prom/prometheus@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996  # v3.5.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=7d"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["9090:9090"]
+
+  grafana:
+    image: grafana/grafana@sha256:a1701c2180249361737a99a01bc770db39381640e4d631825d38ff4535efa47d  # 12.1.1
+    environment:
+      # Local only, bound to localhost: anonymous viewers so a screenshot needs no login.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/dashboard.json
+    volumes:
+      - ./grafana-datasource.yml:/etc/grafana/provisioning/datasources/prometheus.yml:ro
+      - ./grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/itcs355.yml:ro
+      - ../dashboard.json:/var/lib/grafana/dashboards/dashboard.json:ro
+    ports: ["127.0.0.1:3000:3000"]

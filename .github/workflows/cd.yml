@@ -1,8 +1,16 @@
 # ITCS355 Lab 4 — continuous deployment.
 #
 # Runs only on main, only after CI is green. Credentials come from OIDC federation, not
-# from stored keys — TODO(Lab 4): uncomment the block for YOUR provider and delete the
-# other two.
+# from stored keys: infra/ci_identity.sh creates the trust, and GCP accepts a token only
+# when it says repository == this repo AND ref == refs/heads/main. A pull request cannot
+# get credentials at all, whatever this file says.
+#
+# What "deploy to staging" means here. Staging is the registry alias `staging` on a new
+# serving version — this commit's image, the production version's model bytes — smoke-
+# tested by running exactly that pair. It is not a warm endpoint: one replica bills
+# 122 THB a day whether or not anyone calls it, and the Lab 3 budget is spent. Setting the
+# repository variable STAGING_ENDPOINT=true adds the endpoint deploy, through the same
+# adapter call Lab 3 used.
 
 name: CD
 
@@ -16,47 +24,103 @@ permissions:
   contents: read
   id-token: write
 
+concurrency:
+  group: cd-staging
+  cancel-in-progress: false   # never interrupt a half-finished alias move
+
 jobs:
   deploy-staging:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' }}
     runs-on: ubuntu-latest
     environment: staging
+    env:
+      # workflow_run fires on the default branch's HEAD, which may already be a newer
+      # commit. Ship the commit CI actually tested, not whatever main is now.
+      SHA: ${{ github.event.workflow_run.head_sha }}
+      CLOUD_PROVIDER: ${{ vars.CLOUD_PROVIDER }}
+      PROJECT_ID: ${{ vars.PROJECT_ID }}
+      REGION: ${{ vars.REGION }}
+      BLOB_URI: ${{ vars.BLOB_URI }}
+      CONTAINER_REGISTRY: ${{ vars.CONTAINER_REGISTRY }}
+      MLFLOW_TRACKING_URI: ${{ vars.MLFLOW_TRACKING_URI }}
+      MODEL_REGISTRY_NAME: ${{ vars.MODEL_REGISTRY_NAME }}
+      IDENTITY_REF: ${{ vars.IDENTITY_REF }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
-      # --- AWS ---------------------------------------------------------------
-      # - uses: aws-actions/configure-aws-credentials@v4
-      #   with:
-      #     role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-      #     aws-region: ${{ vars.REGION }}
-      # - run: aws ecr get-login-password --region ${{ vars.REGION }} | docker login --username AWS --password-stdin ${{ vars.CONTAINER_REGISTRY }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
 
-      # --- Azure -------------------------------------------------------------
-      # - uses: azure/login@v2
-      #   with:
-      #     client-id: ${{ secrets.AZURE_CLIENT_ID }}
-      #     tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-      #     subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-      # - run: az acr login --name ${{ vars.ACR_NAME }}
+      - name: Install
+        run: |
+          pip install --upgrade pip
+          pip install --require-hashes -r requirements-cd.txt
 
-      # --- GCP ---------------------------------------------------------------
-      # - uses: google-github-actions/auth@v2
-      #   with:
-      #     workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-      #     service_account: ${{ secrets.GCP_DEPLOY_SA }}
-      # - run: gcloud auth configure-docker ${{ vars.REGION }}-docker.pkg.dev
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build serving image
+        run: docker buildx build --platform linux/amd64 -f service/Dockerfile.serve -t itcs355-serve:$SHA --load .
 
       - name: Push image
+        id: push
+        # Through the adapter, which returns the digest read back from the registry. The
+        # SHA tag names the commit; the digest names the bytes, and only the digest is
+        # registered.
         run: |
-          echo "TODO(Lab 4): push the SHA-tagged image through your adapter"
-          # python -c "from src import config; from cloudlayer.factory import get_adapter; \
-          #   print(get_adapter(config.load()).push_image('itcs355-serve:${{ github.sha }}'))"
+          digest=$(python -c "from src import config; from cloudlayer.factory import get_adapter; \
+            print(get_adapter(config.load()).push_image('itcs355-serve:$SHA'))")
+          echo "image=$digest" >> "$GITHUB_OUTPUT"
+          echo "pushed $digest"
 
       - name: Deploy to staging
         run: |
-          echo "TODO(Lab 4): adapter.deploy(model_ref, endpoint, instance)"
+          python scripts/deploy.py --image "${{ steps.push.outputs.image }}" \
+            --source-version production --promote staging --register-only \
+            --record reports/lab4-cd.json
+          if [ "${{ vars.STAGING_ENDPOINT }}" = "true" ]; then
+            python scripts/deploy.py --serving-version staging --endpoint itcs355-staging \
+              --record reports/lab4-cd-endpoint.json
+          else
+            echo "STAGING_ENDPOINT is not true: no replica started (budget)."
+          fi
 
       - name: Smoke test
+        # The exact pair staging now names: the pushed image, pulled back by digest, serving
+        # the registered model bytes. A deploy that is not smoke-tested is a deploy you have
+        # not verified.
         run: |
-          echo "TODO(Lab 4): adapter.invoke() with three known payloads."
-          echo "A deploy that is not smoke-tested is a deploy you have not verified."
+          artifact=$(python -c "import json; print(json.load(open('reports/lab4-cd.json'))['source_artifact_uri'])")
+          version=$(python -c "import json; print(json.load(open('reports/lab4-cd.json'))['source_version'])")
+          mkdir -p staging-model
+          gcloud storage cp -r "$artifact/*" staging-model/
+          chmod -R a+rX staging-model
+          docker pull "${{ steps.push.outputs.image }}"
+          docker run -d --rm --name staging -p 8080:8080 \
+            -v "$PWD/staging-model:/app/staging-model:ro" \
+            -e MODEL_URI=/app/staging-model -e MODEL_VERSION="$version" \
+            "${{ steps.push.outputs.image }}"
+          python scripts/integration_check.py --expect-version "$version" \
+            || { docker logs staging; exit 1; }
+          docker stop staging
+
+      - name: Record
+        if: always()
+        run: |
+          {
+            echo "### Staging"
+            echo "- commit \`$SHA\`"
+            echo "- image \`${{ steps.push.outputs.image }}\`"
+            [ -f reports/lab4-cd.json ] && echo '```json' && cat reports/lab4-cd.json && echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

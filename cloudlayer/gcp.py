@@ -67,6 +67,29 @@ class GcpAdapter(CloudAdapter):
         client = storage.Client(project=self.cfg.project_id)
         client.bucket(bucket_name).blob(blob_name).download_to_filename(str(target))
 
+    def download_dir(self, uri: str, local_dir: str) -> int:
+        from google.cloud import storage
+
+        bucket_name, prefix = _split_gs_uri(uri)
+        client = storage.Client(project=self.cfg.project_id)
+        count = 0
+        for blob in client.list_blobs(bucket_name, prefix=prefix.rstrip("/") + "/"):
+            if blob.name.endswith("/"):
+                continue
+            target = Path(local_dir) / blob.name[len(prefix):].lstrip("/")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            blob.download_to_filename(str(target))
+            count += 1
+        return count
+
+    def delete_prefix(self, key_prefix: str) -> int:
+        bucket, prefix = self._bucket()
+        full = f"{prefix}/{key_prefix.lstrip('/')}" if prefix else key_prefix.lstrip("/")
+        blobs = list(bucket.client.list_blobs(bucket.name, prefix=full))
+        for blob in blobs:
+            blob.delete()
+        return len(blobs)
+
     def push_image(self, local_tag: str) -> str:
         registry = self.cfg.container_registry.rstrip("/")
         host = registry.split("/", 1)[0]
@@ -636,7 +659,137 @@ class GcpAdapter(CloudAdapter):
                 removed.append(f"deployed_model {deployed.id} ({deployed.display_name})")
             endpoints.delete_endpoint(name=endpoint.name).result(timeout=1800)
             removed.append(f"endpoint {endpoint.name}")
+
+        # Lab 4: alert policies and their notification channels carry the same labels,
+        # and a schedule that outlives them pages nobody while it keeps writing points.
+        for kind, name in self._monitoring_resources(tags):
+            self._monitoring().delete(f"{self.MONITORING_API}/{name}",
+                                      params={"force": "true"} if kind == "channel" else None
+                                      ).raise_for_status()
+            removed.append(f"{kind} {name}")
         return removed
 
-    # emit_metric                       -> Lab 4 (Cloud Monitoring time series)
+    # --- Lab 4: Cloud Monitoring, over REST ----------------------------------
+    # google-auth and requests are already pinned in requirements.txt; the monitoring
+    # client library would add a dozen packages to write one number.
+
+    MONITORING_API = "https://monitoring.googleapis.com/v3"
+    METRIC_PREFIX = "custom.googleapis.com/itcs355"
+
+    def _monitoring(self):
+        import google.auth
+        from google.auth.transport.requests import AuthorizedSession
+
+        if getattr(self, "_monitoring_session", None) is None:
+            creds, _ = google.auth.default(
+                scopes=["https://www.googleapis.com/auth/cloud-platform"])
+            self._monitoring_session = AuthorizedSession(creds)
+        return self._monitoring_session
+
+    def emit_metric(self, name: str, value: float, unit: str = "None",
+                    labels: dict[str, str] | None = None) -> None:
+        import datetime as dt
+
+        now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        body = {"timeSeries": [{
+            "metric": {"type": f"{self.METRIC_PREFIX}/{name}", "labels": labels or {}},
+            # `global` because the writer is a scheduled job, not a resource: the series
+            # must survive the endpoint, the runner and the laptop all being gone.
+            "resource": {"type": "global", "labels": {"project_id": self.cfg.project_id}},
+            "points": [{"interval": {"endTime": now}, "value": {"doubleValue": float(value)}}],
+        }]}
+        r = self._monitoring().post(
+            f"{self.MONITORING_API}/projects/{self.cfg.project_id}/timeSeries", json=body)
+        if r.status_code != 200:
+            raise RuntimeError(f"emit_metric {name} {labels}: {r.status_code} {r.text[:300]}")
+
+    def _monitoring_resources(self, tags: dict[str, str]) -> list[tuple[str, str]]:
+        found = []
+        base = f"{self.MONITORING_API}/projects/{self.cfg.project_id}"
+        for kind, path, key in (("policy", "alertPolicies", "alertPolicies"),
+                                ("channel", "notificationChannels", "notificationChannels")):
+            r = self._monitoring().get(f"{base}/{path}")
+            r.raise_for_status()
+            for item in r.json().get(key, []):
+                if all(item.get("userLabels", {}).get(k) == v for k, v in tags.items()):
+                    found.append((kind, item["name"]))
+        return found
+
+    def ensure_metric_alert(self, metric: str, thresholds: dict[str, float], email: str,
+                            tags: dict[str, str], label: str = "feature") -> dict[str, str]:
+        base = f"{self.MONITORING_API}/projects/{self.cfg.project_id}"
+        session = self._monitoring()
+        existing = dict((kind, name) for kind, name in self._monitoring_resources(tags))
+
+        channel = {"type": "email", "displayName": f"itcs355 drift -> {email}",
+                   "labels": {"email_address": email}, "userLabels": tags}
+        if "channel" in existing:
+            channel_name = existing["channel"]
+        else:
+            r = session.post(f"{base}/notificationChannels", json=channel)
+            r.raise_for_status()
+            channel_name = r.json()["name"]
+
+        metric_type = f"{self.METRIC_PREFIX}/{metric}"
+        # Declare the metric before alerting on it. A policy on a metric nobody has written
+        # yet is refused for up to ten minutes, and "set up the alert after the first
+        # breach" is backwards. Creating an existing descriptor is a no-op.
+        r = session.post(f"{base}/metricDescriptors", json={
+            "type": metric_type, "metricKind": "GAUGE", "valueType": "DOUBLE",
+            "description": f"Lab 4: {metric} per {label}, written by the scheduled detector.",
+            "labels": [{"key": label, "valueType": "STRING"}]})
+        if r.status_code not in (200, 409):
+            raise RuntimeError(f"metric descriptor: {r.status_code} {r.text[:300]}")
+
+        # One condition per label value, ORed. Cloud Monitoring allows six conditions per
+        # policy, which is exactly this model's feature count — a seventh feature would
+        # need a second policy, and this refuses rather than silently dropping one.
+        if len(thresholds) > 6:
+            raise ValueError(f"{len(thresholds)} thresholds; one policy holds at most 6")
+        conditions = [{
+            "displayName": f"{metric}{{{label}={key}}} > {limit}",
+            "conditionThreshold": {
+                "filter": (f'metric.type="{metric_type}" AND resource.type="global" '
+                           f'AND metric.label.{label}="{key}"'),
+                # The writer is a schedule, so points are sparse. ALIGN_MAX over 5 min
+                # keeps one breaching point visible to the evaluator; a mean would dilute
+                # it against the empty periods on either side.
+                "aggregations": [{"alignmentPeriod": "300s", "perSeriesAligner": "ALIGN_MAX"}],
+                "comparison": "COMPARISON_GT",
+                "thresholdValue": limit,
+                "duration": "0s",
+                "trigger": {"count": 1},
+            },
+        } for key, limit in sorted(thresholds.items())]
+        policy = {
+            "displayName": f"itcs355 {metric} above its per-{label} limit",
+            "userLabels": tags,
+            "combiner": "OR",
+            "documentation": {"mimeType": "text/markdown", "content": (
+                f"`{metric}` crossed its limit for at least one {label}. Before retraining, "
+                "check whether the schema or null rate changed: a broken upstream pipeline "
+                "looks exactly like drift here, and retraining on it destroys the last good "
+                "model. Runbook: README, Lab 4 Task 6.")},
+            "conditions": conditions,
+            "alertStrategy": {"autoClose": "1800s"},
+            "notificationChannels": [channel_name],
+            "enabled": True,
+        }
+        import time
+
+        # A new descriptor takes minutes to become visible to the policy validator, which
+        # answers 404 "Cannot find metric(s)" meanwhile. Bounded: ten minutes, then fail.
+        for _ in range(21):
+            if "policy" in existing:
+                r = session.patch(f"{self.MONITORING_API}/{existing['policy']}", json=policy)
+            else:
+                r = session.post(f"{base}/alertPolicies", json=policy)
+            if not (r.status_code == 404 and "Cannot find metric" in r.text):
+                break
+            time.sleep(30)
+        if r.status_code != 200:
+            raise RuntimeError(f"alert policy: {r.status_code} {r.text[:400]}")
+        return {"policy": r.json()["name"], "channel": channel_name}
+
+    # generate                          -> Lab 5 (managed LLM endpoint; read usageMetadata for tokens)
     # generate                          -> Lab 5 (managed LLM endpoint; read usageMetadata for tokens)

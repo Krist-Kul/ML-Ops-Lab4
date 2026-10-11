@@ -269,3 +269,60 @@ def test_readiness_requires_scoring_not_just_unpickling():
             assert c.get("/health").json()["status"] == "alive"
             assert c.get("/ready").status_code == 503
             assert "feature names" in c.get("/ready").json()["reason"]
+
+
+# --- Lab 4: metrics --------------------------------------------------------------
+
+def _sample(text: str, name: str, **labels: str) -> float:
+    want = ",".join(f'{k}="{v}"' for k, v in labels.items())
+    for line in text.splitlines():
+        if line.startswith(f"{name}{{{want}}} ") or (not labels and line.startswith(f"{name} ")):
+            return float(line.rsplit(" ", 1)[1])
+    raise AssertionError(f"{name}{{{want}}} not exposed")
+
+
+def test_metrics_split_4xx_from_2xx_and_expose_the_version():
+    with app_module() as module, TestClient(module.app) as c:
+        for _ in range(3):
+            c.post("/predict", json=VALID)
+        c.post("/predict", json={**VALID, "load_pct": 250.0})
+        text = c.get("/metrics").text
+    assert _sample(text, "http_requests_total", path="/predict", status="200", status_class="2xx") == 3
+    assert _sample(text, "http_requests_total", path="/predict", status="422", status_class="4xx") == 1
+    assert _sample(text, "request_latency_ms_count", path="/predict") == 4
+    assert _sample(text, "model_version_info", version="test-1") == 1
+
+
+def test_rejected_rows_never_enter_the_drift_window():
+    """A 422 is a caller problem, not an input distribution. Counting it would let one
+    misbehaving client move the drift panel."""
+    with app_module() as module, TestClient(module.app) as c:
+        c.post("/predict", json={**VALID, "load_pct": 250.0})
+        c.post("/predict", json=VALID)
+        text = c.get("/metrics").text
+    assert _sample(text, "feature_window_rows") == 1
+    assert _sample(text, "feature_window_mean", feature="load_pct") == VALID["load_pct"]
+
+
+def test_window_psi_moves_when_the_inputs_shift():
+    import numpy as np
+
+    rng = np.random.default_rng(0)
+    df = data.load_raw(RAW).sample(400, random_state=1)
+    rows = df[data.FEATURES].to_dict("records")
+    with app_module() as module, TestClient(module.app) as c:
+        c.post("/predict/batch", json={"rows": rows[:100]})
+        before = _sample(c.get("/metrics").text, "feature_window_psi", feature="temp_c")
+        hot = [{**r, "temp_c": r["temp_c"] + 15 + rng.normal()} for r in rows[100:400]]
+        for i in range(0, 300, 100):
+            c.post("/predict/batch", json={"rows": hot[i:i + 100]})
+        after = _sample(c.get("/metrics").text, "feature_window_psi", feature="temp_c")
+    assert after > 0.25 > before, f"PSI {before:.3f} -> {after:.3f}"
+
+
+def test_unknown_paths_share_one_label():
+    with app_module() as module, TestClient(module.app) as c:
+        c.get("/wp-admin")
+        c.get("/.env")
+        text = c.get("/metrics").text
+    assert _sample(text, "http_requests_total", path="other", status="404", status_class="4xx") == 2

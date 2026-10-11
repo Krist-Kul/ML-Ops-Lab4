@@ -34,8 +34,9 @@ from typing import Any
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
+from service.metrics import Metrics
 from service.schemas import BatchRequest, BatchResponse, PredictRequest, PredictResponse
 from src.data import FEATURES, PLAUSIBLE_RANGES
 
@@ -134,6 +135,7 @@ class ModelState:
 
 
 STATE = ModelState()
+METRICS = Metrics()
 log = _configure_logging()
 
 # Midpoint of every plausible range: a row that is valid by construction and stays valid
@@ -314,15 +316,19 @@ async def add_request_context(request: Request, call_next):
     except BaseException as exc:
         # Nothing should escape the handlers below, but a request that dies here must
         # still leave a line behind: an unlogged request is one nobody can investigate.
+        latency = elapsed_ms()
+        METRICS.observe_request(request.url.path, 500, latency)
         _log(logging.ERROR, "request failed", method=request.method,
-             path=request.url.path, latency_ms=elapsed_ms(),
+             path=request.url.path, latency_ms=latency,
              error=f"{type(exc).__name__}: {exc}", **_extra())
         raise
     else:
         response.headers["x-request-id"] = request_id
         response.headers["x-model-version"] = STATE.version
+        latency = elapsed_ms()
+        METRICS.observe_request(request.url.path, response.status_code, latency)
         _log(logging.INFO, "request", method=request.method, path=request.url.path,
-             status=response.status_code, latency_ms=elapsed_ms(),
+             status=response.status_code, latency_ms=latency,
              model_status=STATE.status, **_extra())
         return response
     finally:
@@ -434,7 +440,19 @@ def _score(rows: list[dict]) -> list[float]:
         )
     _extra()["rows"] = len(rows)
     frame = pd.DataFrame(rows, columns=FEATURES)
-    return [float(p) for p in STATE.model.predict_proba(frame)[:, 1]]
+    scores = [float(p) for p in STATE.model.predict_proba(frame)[:, 1]]
+    # After scoring, so the window holds only inputs the model actually answered — a row
+    # that failed validation never reaches here, and is counted as a 4xx instead.
+    METRICS.observe_rows(rows)
+    return scores
+
+
+@app.get("/metrics", response_class=PlainTextResponse)
+def metrics() -> str:
+    """Prometheus scrape target. Unauthenticated by design on a private port; the managed
+    endpoints expose only the predict and health routes, so this never faces the internet
+    unless someone routes it there."""
+    return METRICS.render(STATE.version)
 
 
 @app.post("/predict", response_model=PredictResponse)

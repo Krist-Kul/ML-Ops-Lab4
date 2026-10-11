@@ -59,6 +59,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--promote", default="serving",
                    help="alias to move to the new serving version; empty string to skip")
     p.add_argument("--record", type=Path, default=RECORD)
+    p.add_argument("--register-only", action="store_true",
+                   help="register the serving version and move the alias, but start no "
+                        "replica. Lab 4's CD: staging is a registry alias, not a warm endpoint")
     return p.parse_args()
 
 
@@ -98,6 +101,22 @@ def main() -> int:
             aliases = adapter.promote_model(name, serving_version, args.promote)["aliases"]
             print(f"alias    {args.promote} -> version {serving_version} "
                   f"({', '.join(aliases)})")
+
+    if args.register_only:
+        record = {
+            "serving_version": serving_version,
+            "alias": args.promote,
+            "source_version": source["version"],
+            "source_artifact_uri": source["artifact_uri"],
+            "serving_image": image,
+            "registered_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "endpoint": None,
+            "lineage": source["lineage"],
+        }
+        args.record.parent.mkdir(parents=True, exist_ok=True)
+        args.record.write_text(json.dumps(record, indent=2))
+        print(f"no endpoint started (--register-only). wrote {args.record}")
+        return 0
 
     started = time.time()
     print(f"deploy   {endpoint_name} on {args.instance} "

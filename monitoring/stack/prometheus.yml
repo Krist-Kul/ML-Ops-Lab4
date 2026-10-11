@@ -1,0 +1,7 @@
+global:
+  scrape_interval: 5s      # short, because the injected-drift exercise is measured in minutes
+scrape_configs:
+  - job_name: itcs355-predict
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["service:8080"]

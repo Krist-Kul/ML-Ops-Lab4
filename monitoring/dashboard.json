@@ -1,25 +1,404 @@
 {
-  "_comment": "Lab 4 — dashboard as code. Portable Grafana definition; import it, or translate the panels to CloudWatch / Azure Monitor / Cloud Monitoring. Committing the dashboard is better than clicking one together, and is noted favourably.",
-  "title": "ITCS355 — Prediction service",
-  "refresh": "30s",
+  "uid": "itcs355-service",
+  "title": "ITCS355 \u2014 Prediction service",
+  "description": "Lab 4 dashboard as code. Provisioned read-only by monitoring/stack; edit this file, not the UI.",
+  "schemaVersion": 41,
+  "version": 1,
+  "editable": false,
+  "refresh": "10s",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "timezone": "utc",
+  "tags": [
+    "itcs355",
+    "lab4"
+  ],
   "panels": [
-    {"id": 1, "title": "Request rate", "type": "timeseries", "unit": "reqps",
-     "target": "sum(rate(http_requests_total[1m]))"},
-    {"id": 2, "title": "Error rate by class", "type": "timeseries", "unit": "percentunit",
-     "target": "sum by (status_class) (rate(http_requests_total{status_class=~\"4xx|5xx\"}[5m])) / sum(rate(http_requests_total[5m]))",
-     "_note": "4xx and 5xx must be split. 4xx is usually a caller problem; 5xx is yours."},
-    {"id": 3, "title": "Latency p50 / p95 / p99", "type": "timeseries", "unit": "ms",
-     "targets": [
-       "histogram_quantile(0.50, sum by (le) (rate(request_latency_ms_bucket[5m])))",
-       "histogram_quantile(0.95, sum by (le) (rate(request_latency_ms_bucket[5m])))",
-       "histogram_quantile(0.99, sum by (le) (rate(request_latency_ms_bucket[5m])))"
-     ],
-     "_note": "If p99 is far above p95 in a repeating pattern, suspect cold start or a per-request model load."},
-    {"id": 4, "title": "Feature drift (PSI, rolling)", "type": "timeseries",
-     "target": "drift_psi",
-     "_note": "TODO(Lab 4): at least one feature-distribution statistic is required. Emit it from monitoring/drift.py via adapter.emit_metric."},
-    {"id": 5, "title": "Model version in production", "type": "stat",
-     "target": "model_version_info",
-     "_note": "During a canary you should see two. If you see two when you are not deploying, something is wrong."}
-  ]
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Request rate",
+      "description": "Prediction routes only. Probes and scrapes are excluded: /ready alone is ~360 requests an hour on Vertex.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (path) (rate(http_requests_total{path=~\"/predict.*\"}[1m]))",
+          "legendFormat": "{{path}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Error rate by class",
+      "description": "4xx and 5xx split. 4xx is usually a caller problem and is excluded from the availability SLO; 5xx is ours.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (status_class) (rate(http_requests_total{path=~\"/predict.*\",status_class=~\"4xx|5xx\"}[5m])) / scalar(sum(rate(http_requests_total{path=~\"/predict.*\"}[5m])))",
+          "legendFormat": "{{status_class}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Latency p50 / p95 / p99 (/predict, server-side)",
+      "description": "If p99 is far above p95 in a repeating pattern, suspect cold start or a per-request model load. Local numbers are emulated amd64, ~1.7x slow.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 16,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(request_latency_ms_bucket{path=\"/predict\"}[1m])))",
+          "legendFormat": "p50",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(request_latency_ms_bucket{path=\"/predict\"}[1m])))",
+          "legendFormat": "p95",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(request_latency_ms_bucket{path=\"/predict\"}[1m])))",
+          "legendFormat": "p99",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Model version in production",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 8,
+        "w": 8,
+        "h": 8
+      },
+      "description": "One value normally. Two during a canary; two when nobody is deploying means something is wrong.",
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "count by (version) (model_version_info)",
+          "legendFormat": "version {{version}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "name",
+        "colorMode": "none",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Feature drift \u2014 PSI of the last 500 inputs vs training",
+      "description": "Same statistic and window size as the scheduled detector (monitoring/drift.py). Scored in-process against monitoring/reference_profile.json. Dashed lines are the per-feature alert limits from monitoring/drift.ALERT_PSI.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "feature_window_psi",
+          "legendFormat": "{{feature}}",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "vector(0.10)",
+          "legendFormat": "limit, five features (0.10)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "C",
+          "expr": "vector(0.30)",
+          "legendFormat": "limit, load_pct (0.30)",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "limit.*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    8,
+                    6
+                  ]
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 1
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Rolling mean, last 500 inputs \u2014 temp_c",
+      "description": "The mean moves under a shift; it barely moves under a change of spread or of fleet mix, which is why the PSI panel exists.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "feature_window_mean{feature=\"temp_c\"}",
+          "legendFormat": "temp_c window mean",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        },
+        {
+          "refId": "B",
+          "expr": "feature_window_rows",
+          "legendFormat": "rows in window",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "showPoints": "never"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "rows in window"
+            },
+            "properties": [
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    6,
+                    4
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    }
+  ],
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  }
 }
