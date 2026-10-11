@@ -153,11 +153,41 @@ canary-status: ## Who is attached, what share each holds, what it costs
 	python scripts/canary.py status --endpoint $(ENDPOINT)
 
 # --- Lab 4 -------------------------------------------------------------------
-inject-drift: ## Shift a feature's distribution on purpose
-	python scripts/inject_drift.py --feature temp_c --mode shift --magnitude 6
+MAGNITUDE ?= 4
+LAB4_REPO ?= Krist-Kul/ML-Ops-Lab4
+EMAIL ?=
+
+inject-drift: ## Shift temp_c by MAGNITUDE (default 4 C, the target the threshold was set for)
+	python scripts/inject_drift.py --feature temp_c --mode shift --magnitude $(MAGNITUDE)
 
 drift: ## Score drift against the reference window
 	python -m monitoring.drift --current data/current.csv
+
+drift-threshold: ## Derive the per-feature PSI limits and window from no-drift simulation
+	python scripts/drift_threshold.py
+
+drift-alerting: ## Create or update the drift alert policy and its email channel (EMAIL=...)
+	@test -n "$(EMAIL)" || { echo "usage: make drift-alerting EMAIL=you@example.com"; exit 2; }
+	python scripts/drift_alerting.py --email $(EMAIL)
+
+monitor-up: ## Service + Prometheus + Grafana locally; dashboard at localhost:3000
+	python -c "from src import config; from cloudlayer.factory import get_adapter; \
+	a = get_adapter(config.load()); e = a.get_model(config.load().model_registry_name, 'production'); \
+	print(a.download_dir(e['artifact_uri'], 'reports/prod-model'))"
+	GIT_SHA=$$(git rev-parse --short HEAD) docker compose -f monitoring/stack/compose.yml up -d --build
+
+monitor-down: ## Stop the local monitoring stack
+	docker compose -f monitoring/stack/compose.yml down
+
+replay: ## Production traffic to the local service, shipping the input window for the detector
+	python scripts/replay_traffic.py --rate 4 --minutes 10
+
+teardown-lab4: ## Disable the drift schedule FIRST, then delete the alert policy, channel and inputs
+	gh workflow disable Drift -R $(LAB4_REPO) || true
+	python scripts/teardown.py --lab 4 --yes
+	python -c "from src import config; from cloudlayer.factory import get_adapter; \
+	print(get_adapter(config.load()).delete_prefix('lab4/'))"
+	docker compose -f monitoring/stack/compose.yml down
 
 # --- Lab 5 -------------------------------------------------------------------
 pipeline: ## Compile pipeline/pipeline.yaml for your provider

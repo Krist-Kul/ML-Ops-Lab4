@@ -1,0 +1,85 @@
+# ITCS355 Lab 4 — scheduled drift detection.
+#
+# Every 10 minutes: read the most recent production input window from object storage,
+# score it against the training reference, write drift_psi{feature} to Cloud Monitoring.
+# The alert policy (scripts/drift_alerting.py) turns a breach into an email; this job
+# also fails on a breach, so GitHub's own failure email is a second, independent channel.
+#
+# Why GitHub's scheduler and not Cloud Scheduler: the detector needs Python, the repo and
+# an identity, all of which this workflow already has. Cloud Scheduler can only call an
+# HTTP target, so it would need a Cloud Run job or function in front of it — a second
+# deployable to build, secure and tear down for the same ten lines. The cost of the choice
+# is precision: GitHub starts scheduled runs late under load, and Task 6 measures by how
+# much. A schedule that outlives teardown keeps scoring a deleted stream, so `make
+# teardown-lab4` disables this workflow explicitly.
+
+name: Drift
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: drift
+  cancel-in-progress: false
+
+jobs:
+  score:
+    runs-on: ubuntu-latest
+    env:
+      CLOUD_PROVIDER: ${{ vars.CLOUD_PROVIDER }}
+      PROJECT_ID: ${{ vars.PROJECT_ID }}
+      REGION: ${{ vars.REGION }}
+      BLOB_URI: ${{ vars.BLOB_URI }}
+      CONTAINER_REGISTRY: ${{ vars.CONTAINER_REGISTRY }}
+      MLFLOW_TRACKING_URI: ${{ vars.MLFLOW_TRACKING_URI }}
+      MODEL_REGISTRY_NAME: ${{ vars.MODEL_REGISTRY_NAME }}
+      IDENTITY_REF: ${{ vars.IDENTITY_REF }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: |
+          pip install --upgrade pip
+          pip install --require-hashes -r requirements-cd.txt
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SA }}
+
+      - name: Reference window
+        # Deterministic from the seed: the same bytes the model's training split came from.
+        run: python scripts/make_dataset.py
+
+      - name: Score and emit
+        # max-age is two schedule periods: one late run is GitHub, two is a silent producer.
+        run: |
+          echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          python -m monitoring.drift \
+            --current "$BLOB_URI/lab4/inputs/latest.csv" \
+            --max-age-s 1200 --emit --out reports/drift.json
+
+      - name: Record
+        if: always()
+        run: |
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat reports/drift.json >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "no score" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drift-${{ github.run_id }}
+          path: reports/drift.json
+          if-no-files-found: ignore

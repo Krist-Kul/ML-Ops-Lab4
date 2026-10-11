@@ -83,3 +83,12 @@ def test_compare_sorts_worst_first_and_labels_verdicts(reference):
 ])
 def test_verdict_boundaries_are_inclusive_upward(score, expected):
     assert drift.verdict_for(score) == expected
+
+
+def test_every_feature_has_a_derived_alert_limit():
+    """A feature added to the model without a limit would fall back to the tutorial 0.25,
+    which this data shows catches a +4 °C shift 3.6% of the time."""
+    from src import data
+
+    assert set(drift.ALERT_PSI) == set(data.FEATURES)
+    assert all(0 < v < drift.PSI_MODERATE * 2 for v in drift.ALERT_PSI.values())

@@ -405,6 +405,52 @@ objective has a date on it: production is version 1, registered 2026-09-20, and 
 **2026-10-20** — so Lab 5's schedule must retrain at least every 28 days, or the SLO and the
 pipeline contradict each other.
 
+### Task 5 — drift detection on a schedule
+
+**Detector.** `monitoring/drift.py`: PSI per feature (KS reported alongside), the most recent
+**500** production inputs against the **training split** — the rows the production model learned
+from, not the whole file. `.github/workflows/drift.yml` runs it **every 10 minutes**, reading the
+input window from object storage, and writes `drift_psi{feature}` to Cloud Monitoring through
+`adapter.emit_metric`. An alert policy (`scripts/drift_alerting.py`, one condition per feature,
+ORed) emails **champkritchanat04@gmail.com**; the job also fails on a breach, so GitHub's failure
+email is a second, independent channel.
+
+**Thresholds, and why** — derived by `scripts/drift_threshold.py`
+(`reports/lab4-drift-threshold.md`) and committed before any drift was injected:
+
+| feature | limit |
+|---|---:|
+| temp_c, vibration_mm_s, pressure_kpa, hours_since_service, ambient_humidity | **0.10** |
+| load_pct | **0.30** |
+
+- *The rule, fixed before the numbers:* per feature, the largest PSI that feature scored in 2,000
+  no-drift windows of 500 rows from the 96 machines the model never saw, rounded **up** to 0.05.
+  Zero of the 2,000 no-drift windows breaches any limit.
+- *Why per feature:* `load_pct` is a duty cycle, a per-machine trait, and with 96 machines its
+  no-drift PSI is 4–6× every other feature's. One global threshold has to clear it, and at the 0.30
+  that takes, a +4 °C `temp_c` shift is caught in **0.2%** of windows. The per-feature limits catch it
+  in **100%**.
+- *Why +4 °C is the shift that has to be caught:* it is the smallest whole-degree shift that moves
+  the production model's mean predicted risk by about 10% (+9.3%; +2 °C moves it 4.4%).
+- *Why 500 rows:* the smallest window that catches +4 °C in at least 90% of windows (250 catches 84%).
+  1,000 would be tighter, but would take twice as long to fill, and fill time is detection latency.
+- *Why not the defaults:* on this data PSI 0.10 as one global number fires on **95%** of no-drift
+  windows ("everything alerts constantly"); 0.25 catches +4 °C **3.6%** of the time ("never fires").
+  Both failure modes in the handout's table, from the same two tutorial numbers.
+- *What it is weak at, stated:* the `temp_c` limit sits only 0.0003 above the worst no-drift window
+  seen, so expect an occasional false alarm — fewer than 1 in 2,000 checks, about one in two weeks at
+  this cadence. A uniform 1.5× widening of `temp_c` is caught 98.6% of the time; +2 °C only 4.8%.
+
+**Two guards against the alert lying.** A window whose newest row is older than 20 minutes (two
+schedule periods) is not scored: re-scoring a frozen window would re-emit the last verdict forever.
+And no window at all is "nothing to score", not an error that emails every ten minutes.
+
+**Why GitHub's scheduler instead of Cloud Scheduler.** The detector needs Python, this repository
+and an identity, and the workflow already has all three. Cloud Scheduler can only call an HTTP
+target, so it would need a Cloud Run job in front of it: a second deployable to build, secure and
+tear down. The cost is precision, since GitHub starts scheduled runs late under load. Task 6 measures
+by how much.
+
 ---
 
 ## Notes for the grader

@@ -1,0 +1,18 @@
+{
+  "policy": "projects/itcs355-6688053/alertPolicies/12737270989224171375",
+  "channel": "projects/itcs355-6688053/notificationChannels/4665810857729601732",
+  "thresholds": {
+    "temp_c": 0.1,
+    "vibration_mm_s": 0.1,
+    "pressure_kpa": 0.1,
+    "hours_since_service": 0.1,
+    "load_pct": 0.3,
+    "ambient_humidity": 0.1
+  },
+  "metric": "drift_psi",
+  "tags": {
+    "course": "itcs355",
+    "student": "itcs355-6688053",
+    "lab": "4"
+  }
+}

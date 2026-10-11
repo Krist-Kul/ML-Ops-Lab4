@@ -22,15 +22,29 @@ import numpy as np
 import pandas as pd
 
 # Conventional PSI reading, and it IS only conventional — it comes from credit scoring,
-# where features are stable and volumes are large. Your problem may warrant something
-# tighter or looser. TODO(Lab 4): state your threshold and why, in your README.
+# where features are stable and volumes are large. Kept for the verdict column only; the
+# alert does not use it. Measured on this data it is wrong in both directions: 0.10 fires
+# on 95% of no-drift windows, 0.25 catches a +4 °C shift in 3.6% of drifted ones.
 PSI_NO_CHANGE = 0.10
 PSI_MODERATE = 0.25
 
-# The scheduled detector's settings. Lab 4 Task 5 commits these, with the measurement
-# behind them, before any drift is injected.
+# The scheduled detector, derived by scripts/drift_threshold.py (reports/lab4-drift-
+# threshold.md) and committed before any drift was injected. Rule: per feature, the largest
+# PSI that feature scored over 2000 no-drift windows of WINDOW unseen-machine rows, rounded
+# up to 0.05. Per feature, because load_pct is a per-machine trait and its no-drift PSI is
+# 4-6x the others': one global threshold has to clear it, and at 0.30 that blinds temp_c
+# to a +4 °C shift (caught 0.2%) that these limits catch in 100% of windows. +4 °C is the
+# target because it is the smallest whole-degree shift that moves the production model's
+# mean predicted risk by ~10% (+9.3%).
 WINDOW = 500
-ALERT_PSI = PSI_MODERATE
+ALERT_PSI: dict[str, float] = {
+    "temp_c": 0.10,
+    "vibration_mm_s": 0.10,
+    "pressure_kpa": 0.10,
+    "hours_since_service": 0.10,
+    "load_pct": 0.30,
+    "ambient_humidity": 0.10,
+}
 
 
 @dataclass
@@ -167,10 +181,12 @@ def main() -> int:
     ap.add_argument("--current", help="CSV path or storage URI of recent production inputs")
     ap.add_argument("--window", type=int, default=WINDOW,
                     help="score the most recent N rows of --current")
-    ap.add_argument("--threshold", type=float, default=ALERT_PSI,
-                    help="alert above this PSI. Justified in the README, not a default.")
+    ap.add_argument("--threshold", type=float, default=None,
+                    help="one PSI limit for every feature, overriding the derived ALERT_PSI")
     ap.add_argument("--out", type=Path, default=Path("reports/drift.json"))
     ap.add_argument("--emit", action="store_true", help="send scores as cloud metrics")
+    ap.add_argument("--max-age-s", type=float, default=None,
+                    help="refuse to score a window whose newest row is older than this")
     ap.add_argument("--write-profile", type=Path, metavar="PATH",
                     help="write the reference profile (training split) and exit")
     args = ap.parse_args()
@@ -188,27 +204,49 @@ def main() -> int:
     if not args.current:
         ap.error("--current is required unless --write-profile is given")
 
-    current = _read_current(args.current)
+    try:
+        current = _read_current(args.current)
+    except Exception as exc:
+        # No window yet (nothing has been served) is a state, not a failure: every
+        # scheduled run would otherwise email an error until traffic starts. Anything
+        # else — a permission error, a malformed file — still fails loudly.
+        if type(exc).__name__ not in ("NotFound", "FileNotFoundError"):
+            raise
+        print(f"NO INPUT  {args.current} does not exist yet; nothing scored, nothing emitted")
+        return 0
     if "sent_at" in current.columns:
         current = current.sort_values("sent_at")
     current = current.tail(args.window)
+    if args.max_age_s is not None and "sent_at" in current.columns:
+        newest = pd.Timestamp(current["sent_at"].max())
+        age = (pd.Timestamp.now(tz="UTC") - newest).total_seconds()
+        if age > args.max_age_s:
+            # Re-scoring a frozen window would re-emit the last verdict forever: a drift
+            # alert that never closes, or an all-clear about inputs nobody is sending. A
+            # silent producer is its own incident, and it is not this statistic's to judge.
+            print(f"STALE  newest input is {age:.0f}s old (limit {args.max_age_s:.0f}s); "
+                  "nothing scored, nothing emitted")
+            return 0
     if len(current) < args.window:
         # A short window is not "no drift"; it is an unknown. The null distribution behind
         # ALERT_PSI was measured at WINDOW rows, and PSI on fewer rows is noisier.
         print(f"WARN  only {len(current)} rows, threshold was set for {args.window}")
     results = compare(reference, current, data.FEATURES)
+    limits = {f: args.threshold if args.threshold is not None else ALERT_PSI.get(f, PSI_MODERATE)
+              for f in data.FEATURES}
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps({
         "scored_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "source": args.current, "rows": len(current), "threshold": args.threshold,
+        "source": args.current, "rows": len(current), "thresholds": limits,
         "newest_input": str(current["sent_at"].max()) if "sent_at" in current else None,
         "features": [asdict(r) for r in results],
     }, indent=2))
 
-    print(f"{'feature':<22}{'psi':>10}{'ks':>10}  verdict")
+    print(f"{'feature':<22}{'psi':>10}{'limit':>8}{'ks':>10}  verdict")
     for r in results:
-        print(f"{r.feature:<22}{r.psi:>10.5f}{r.ks_statistic:>10.5f}  {r.verdict}")
+        flag = "  <-- ALERT" if r.psi > limits[r.feature] else ""
+        print(f"{r.feature:<22}{r.psi:>10.5f}{limits[r.feature]:>8.2f}{r.ks_statistic:>10.5f}  {r.verdict}{flag}")
 
     if args.emit:
         from cloudlayer.factory import get_adapter
@@ -216,15 +254,16 @@ def main() -> int:
         for r in results:
             adapter.emit_metric("drift_psi", r.psi, labels={"feature": r.feature})
 
-    breached = [r for r in results if r.psi >= args.threshold]
+    # Strictly above: the limit is the rounded-up worst no-drift score, so equal is normal.
+    breached = [r for r in results if r.psi > limits[r.feature]]
     if breached:
-        print(f"\nALERT  {len(breached)} feature(s) above threshold {args.threshold}: "
-              + ", ".join(r.feature for r in breached))
+        print(f"\nALERT  {len(breached)} feature(s) above their limit: "
+              + ", ".join(f"{r.feature} {r.psi:.3f} > {limits[r.feature]}" for r in breached))
         print("Before you retrain: is this drift, or is it a broken upstream pipeline? "
               "Retraining on corrupted data destroys a working model faster than any "
               "schedule would.")
         return 2
-    print(f"\nOK  no feature above threshold {args.threshold}")
+    print("\nOK  no feature above its limit")
     return 0
 
 

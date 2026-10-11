@@ -1,0 +1,252 @@
+{
+  "reference_rows": 3600,
+  "pool_rows": 2400,
+  "pool_machines": 96,
+  "null_draws": 2000,
+  "drift_draws": 500,
+  "windows": {
+    "250": {
+      "null_per_feature_p99": {
+        "temp_c": 0.1001,
+        "vibration_mm_s": 0.0822,
+        "pressure_kpa": 0.0823,
+        "hours_since_service": 0.0889,
+        "load_pct": 0.2822,
+        "ambient_humidity": 0.0805
+      },
+      "null_per_feature_max": {
+        "temp_c": 0.1232,
+        "vibration_mm_s": 0.1083,
+        "pressure_kpa": 0.1136,
+        "hours_since_service": 0.1299,
+        "load_pct": 0.3752,
+        "ambient_humidity": 0.1019
+      },
+      "null_worst_feature_p50": 0.1545,
+      "null_worst_feature_p99": 0.2822,
+      "null_worst_feature_max": 0.3752,
+      "false_alarm_rate_at_0.10": 0.911,
+      "false_alarm_rate_at_0.25": 0.0325,
+      "global_threshold": 0.4,
+      "thresholds": {
+        "temp_c": 0.15,
+        "vibration_mm_s": 0.15,
+        "pressure_kpa": 0.15,
+        "hours_since_service": 0.15,
+        "load_pct": 0.4,
+        "ambient_humidity": 0.15
+      },
+      "false_alarm_rate_per_feature_rule": 0.0,
+      "drift": {
+        "temp_c +2C": {
+          "median_psi": 0.0762,
+          "p05_psi": 0.0372,
+          "caught_at_threshold": 0.018,
+          "caught_at_global": 0.0,
+          "caught_at_0.25": 0.0
+        },
+        "temp_c +4C": {
+          "median_psi": 0.1969,
+          "p05_psi": 0.122,
+          "caught_at_threshold": 0.84,
+          "caught_at_global": 0.0,
+          "caught_at_0.25": 0.158
+        },
+        "temp_c +6C": {
+          "median_psi": 0.419,
+          "p05_psi": 0.2995,
+          "caught_at_threshold": 1.0,
+          "caught_at_global": 0.594,
+          "caught_at_0.25": 0.992
+        },
+        "temp_c +8C": {
+          "median_psi": 0.6657,
+          "p05_psi": 0.5095,
+          "caught_at_threshold": 1.0,
+          "caught_at_global": 1.0,
+          "caught_at_0.25": 1.0
+        },
+        "temp_c spread x1.5": {
+          "median_psi": 0.1764,
+          "p05_psi": 0.108,
+          "caught_at_threshold": 0.684,
+          "caught_at_global": 0.0,
+          "caught_at_0.25": 0.076
+        }
+      }
+    },
+    "500": {
+      "null_per_feature_p99": {
+        "temp_c": 0.0555,
+        "vibration_mm_s": 0.0374,
+        "pressure_kpa": 0.0394,
+        "hours_since_service": 0.0495,
+        "load_pct": 0.2235,
+        "ambient_humidity": 0.0418
+      },
+      "null_per_feature_max": {
+        "temp_c": 0.0997,
+        "vibration_mm_s": 0.0536,
+        "pressure_kpa": 0.0633,
+        "hours_since_service": 0.0772,
+        "load_pct": 0.2639,
+        "ambient_humidity": 0.0656
+      },
+      "null_worst_feature_p50": 0.1422,
+      "null_worst_feature_p99": 0.2235,
+      "null_worst_feature_max": 0.2639,
+      "false_alarm_rate_at_0.10": 0.9515,
+      "false_alarm_rate_at_0.25": 0.001,
+      "global_threshold": 0.3,
+      "thresholds": {
+        "temp_c": 0.1,
+        "vibration_mm_s": 0.1,
+        "pressure_kpa": 0.1,
+        "hours_since_service": 0.1,
+        "load_pct": 0.3,
+        "ambient_humidity": 0.1
+      },
+      "false_alarm_rate_per_feature_rule": 0.0,
+      "drift": {
+        "temp_c +2C": {
+          "median_psi": 0.0636,
+          "p05_psi": 0.0368,
+          "caught_at_threshold": 0.048,
+          "caught_at_global": 0.0,
+          "caught_at_0.25": 0.0
+        },
+        "temp_c +4C": {
+          "median_psi": 0.1855,
+          "p05_psi": 0.1393,
+          "caught_at_threshold": 1.0,
+          "caught_at_global": 0.002,
+          "caught_at_0.25": 0.036
+        },
+        "temp_c +6C": {
+          "median_psi": 0.4164,
+          "p05_psi": 0.3379,
+          "caught_at_threshold": 1.0,
+          "caught_at_global": 0.996,
+          "caught_at_0.25": 1.0
+        },
+        "temp_c +8C": {
+          "median_psi": 0.6826,
+          "p05_psi": 0.5794,
+          "caught_at_threshold": 1.0,
+          "caught_at_global": 1.0,
+          "caught_at_0.25": 1.0
+        },
+        "temp_c spread x1.5": {
+          "median_psi": 0.1642,
+          "p05_psi": 0.1198,
+          "caught_at_threshold": 0.986,
+          "caught_at_global": 0.0,
+          "caught_at_0.25": 0.016
+        }
+      }
+    },
+    "1000": {
+      "null_per_feature_p99": {
+        "temp_c": 0.0328,
+        "vibration_mm_s": 0.0168,
+        "pressure_kpa": 0.0191,
+        "hours_since_service": 0.0279,
+        "load_pct": 0.1855,
+        "ambient_humidity": 0.0198
+      },
+      "null_per_feature_max": {
+        "temp_c": 0.0428,
+        "vibration_mm_s": 0.0263,
+        "pressure_kpa": 0.0258,
+        "hours_since_service": 0.0362,
+        "load_pct": 0.2012,
+        "ambient_humidity": 0.029
+      },
+      "null_worst_feature_p50": 0.1374,
+      "null_worst_feature_p99": 0.1855,
+      "null_worst_feature_max": 0.2012,
+      "false_alarm_rate_at_0.10": 0.9905,
+      "false_alarm_rate_at_0.25": 0.0,
+      "global_threshold": 0.25,
+      "thresholds": {
+        "temp_c": 0.05,
+        "vibration_mm_s": 0.05,
+        "pressure_kpa": 0.05,
+        "hours_since_service": 0.05,
+        "load_pct": 0.25,
+        "ambient_humidity": 0.05
+      },
+      "false_alarm_rate_per_feature_rule": 0.0,
+      "drift": {
+        "temp_c +2C": {
+          "median_psi": 0.0571,
+          "p05_psi": 0.0409,
+          "caught_at_threshold": 0.746,
+          "caught_at_global": 0.0,
+          "caught_at_0.25": 0.0
+        },
+        "temp_c +4C": {
+          "median_psi": 0.1806,
+          "p05_psi": 0.1508,
+          "caught_at_threshold": 1.0,
+          "caught_at_global": 0.002,
+          "caught_at_0.25": 0.002
+        },
+        "temp_c +6C": {
+          "median_psi": 0.4122,
+          "p05_psi": 0.3632,
+          "caught_at_threshold": 1.0,
+          "caught_at_global": 1.0,
+          "caught_at_0.25": 1.0
+        },
+        "temp_c +8C": {
+          "median_psi": 0.6944,
+          "p05_psi": 0.6384,
+          "caught_at_threshold": 1.0,
+          "caught_at_global": 1.0,
+          "caught_at_0.25": 1.0
+        },
+        "temp_c spread x1.5": {
+          "median_psi": 0.1623,
+          "p05_psi": 0.1319,
+          "caught_at_threshold": 1.0,
+          "caught_at_global": 0.0,
+          "caught_at_0.25": 0.0
+        }
+      }
+    }
+  },
+  "chosen_window": 500,
+  "chosen_thresholds": {
+    "temp_c": 0.1,
+    "vibration_mm_s": 0.1,
+    "pressure_kpa": 0.1,
+    "hours_since_service": 0.1,
+    "load_pct": 0.3,
+    "ambient_humidity": 0.1
+  },
+  "risk_response": {
+    "baseline_mean_risk": 0.1148,
+    "baseline_flagged_at_0.5": 0.0179,
+    "+2C": {
+      "mean_risk": 0.1198,
+      "relative": 0.0436,
+      "flagged_at_0.5": 0.0183
+    },
+    "+4C": {
+      "mean_risk": 0.1255,
+      "relative": 0.0929,
+      "flagged_at_0.5": 0.0208
+    },
+    "+6C": {
+      "mean_risk": 0.1319,
+      "relative": 0.1486,
+      "flagged_at_0.5": 0.0229
+    },
+    "+8C": {
+      "mean_risk": 0.139,
+      "relative": 0.2111,
+      "flagged_at_0.5": 0.0275
+    }
+  }
+}
