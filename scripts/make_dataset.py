@@ -52,7 +52,8 @@ def build(seed: int) -> pd.DataFrame:
                 "vibration_mm_s": round(float(vib), 3),
                 "pressure_kpa": round(float(pressure), 3),
                 "hours_since_service": round(hours, 3),
-                "load_pct": round(load, 3),
+                # Gateway v2 reports utilisation as a 0-1 fraction, per the new telemetry spec.
+                "load_pct": round(load / 100, 5),
                 "ambient_humidity": round(humidity, 3),
                 "failed_within_7d": int(rng.random() < p),
             })
